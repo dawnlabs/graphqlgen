@@ -2,7 +2,6 @@ import * as os from 'os'
 
 import {
   GraphQLTypeObject,
-  GraphQLType,
   GraphQLTypeField,
   getGraphQLEnumValues,
 } from '../source-helper'
@@ -58,31 +57,18 @@ export function renderDefaultResolvers(
   args: GenerateArgs,
   variableName: string,
 ): string {
-  const model = args.modelMap[graphQLTypeObject.name]
+  const modelName = getModelName(graphQLTypeObject.type, args.modelMap)
+  const defaultResolverFields = extractDefaultResolverFields(graphQLTypeObject, args)
 
-  if (model === undefined) {
+  if (!defaultResolverFields.length) {
     return `export const ${variableName} = {}`
   }
 
-  const modelDef = model.definition
-
   return `export const ${variableName} = {
-    ${fieldsFromModelDefinition(modelDef)
-      .filter(modelField => {
-        const graphQLField = graphQLTypeObject.fields.find(
-          field => field.name === modelField.name,
-        )
-
-        return shouldRenderDefaultResolver(graphQLField, modelField, args)
-      })
-      .map(modelField =>
-        renderDefaultResolver(
-          modelField.name,
-          modelField.optional,
-          model.definition.name,
-        ),
-      )
-      .join(os.EOL)}
+    ${defaultResolverFields
+      .map(({ name, optional }) => renderDefaultResolver(name, optional, modelName))
+      .join(os.EOL)
+    }
   }`
 }
 
@@ -107,6 +93,28 @@ function renderFieldGetter(
   return fieldGetter
 }
 
+export function extractDefaultResolverFields(
+  graphQLTypeObject: GraphQLTypeObject,
+  args: GenerateArgs,
+) {
+  const model = args.modelMap[graphQLTypeObject.name]
+
+  if (model === undefined) {
+    return []
+  }
+
+  const modelDef = model.definition
+
+  return fieldsFromModelDefinition(modelDef)
+    .filter(modelField => {
+      const graphQLField = graphQLTypeObject.fields.find(
+        field => field.name === modelField.name,
+      )
+
+      return shouldRenderDefaultResolver(graphQLField, modelField, args)
+    })
+}
+
 export function getContextName(context?: ContextDefinition) {
   if (!context) {
     return 'Context'
@@ -116,7 +124,7 @@ export function getContextName(context?: ContextDefinition) {
 }
 
 export function getModelName(
-  type: GraphQLType,
+  type: { name: string, isEnum: boolean },
   modelMap: ModelMap,
   emptyType: string = '{}',
 ): string {
