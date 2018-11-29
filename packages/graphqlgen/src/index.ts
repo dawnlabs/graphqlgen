@@ -61,16 +61,19 @@ function getResolversGenerator(language: Language): IGenerator {
 function generateTypes(
   generateArgs: GenerateArgs,
   generateCodeArgs: GenerateCodeArgs,
-): string {
+): CodeFileLike[] {
   const generatorFn: IGenerator = getTypesGenerator(generateCodeArgs.language!)
-  const generatedTypes = generatorFn.generate(generateArgs)
+  const generatedTypes = generatorFn.generate(generateArgs) as CodeFileLike[]
 
-  return generateCodeArgs.prettify
-    ? generatorFn.format(
-        generatedTypes as string,
-        generateCodeArgs.prettifyOptions,
-      )
-    : (generatedTypes as string)
+  return generatedTypes.map(t => {
+    return {
+      path: t.path,
+      force: t.force,
+      code: generateCodeArgs.prettify
+        ? generatorFn.format(t.code, generateCodeArgs.prettifyOptions)
+        : t.code
+    }
+  })
 }
 
 function generateResolvers(
@@ -97,7 +100,7 @@ function generateResolvers(
 
 export function generateCode(
   generateCodeArgs: GenerateCodeArgs,
-): { generatedTypes: string; generatedResolvers: CodeFileLike[] } {
+): { generatedTypes: CodeFileLike[]; generatedResolvers: CodeFileLike[] } {
   const { schema } = generateCodeArgs
   const generateArgs: GenerateArgs = {
     ...schema,
@@ -114,18 +117,33 @@ export function generateCode(
   return { generatedTypes, generatedResolvers }
 }
 
-function writeTypes(types: string, config: GraphQLGenDefinition): void {
-  // Create generation target folder, if it does not exist
-  // TODO: Error handling around this
-  mkdirp.sync(path.dirname(config.output))
-  try {
-    fs.writeFileSync(config.output, types, { encoding: 'utf-8' })
-  } catch (e) {
-    console.error(
-      chalk.red(`Failed to write the file at ${config.output}, error: ${e}`),
-    )
-    process.exit(1)
-  }
+// TODO: handle case where types is still a string (or convert other type generators to be file based)
+function writeTypes(
+  types: CodeFileLike[],
+  config: GraphQLGenDefinition
+) {
+  const outputTypesDir = config.output
+
+  rimraf.sync(outputTypesDir)
+
+  types.forEach(t => {
+    const writePath = path.join(outputTypesDir, t.path)
+    mkdirp.sync(path.dirname(writePath))
+
+    try {
+      fs.writeFileSync(
+        writePath,
+        t.code
+      )
+    } catch (e) {
+      console.error(
+        chalk.red(
+          `Failed to write the file at ${outputTypesDir}, error: ${e}`,
+        ),
+      )
+      process.exit(1)
+    }
+  })
   console.log(
     chalk.green(
       `Resolver interface definitions & default resolvers generated at ${
