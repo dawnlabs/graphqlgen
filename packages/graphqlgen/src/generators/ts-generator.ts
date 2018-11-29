@@ -1,9 +1,10 @@
 import * as os from 'os'
 import * as prettier from 'prettier'
 
-import { GenerateArgs, ModelMap, ContextDefinition } from '../types'
+import { CodeFileLike, GenerateArgs, ModelMap, ContextDefinition } from '../types'
 import { GraphQLTypeField, GraphQLTypeObject } from '../source-helper'
 import {
+  renderDefaultResolverMethods,
   renderDefaultResolvers,
   getContextName,
   getModelName,
@@ -13,6 +14,8 @@ import {
   getDistinctInputTypes,
   renderEnums,
   groupModelsNameByImportPath,
+  shouldScaffoldFieldResolver,
+  fieldsFromModelDefinition
 } from './common'
 import { TypeAliasDefinition } from '../introspection/types'
 import { upperFirst } from '../utils'
@@ -33,7 +36,7 @@ export function format(code: string, options: prettier.Options = {}) {
   }
 }
 
-export function generate(args: GenerateArgs): string {
+export function generate(args: GenerateArgs): CodeFileLike[] {
   // TODO: Maybe move this to source helper
   const inputTypesMap: InputTypesMap = args.types
     .filter(type => type.type.isInput)
@@ -66,16 +69,13 @@ export function generate(args: GenerateArgs): string {
       }
     }, {})
 
-  return `\
-  ${renderHeader(args)}
+  let files: CodeFileLike[] = args.types
+    .filter(type => type.type.isObject)
+    .map(type => generateTypeFile(type, args, typeToInputTypeAssociation, inputTypesMap))
 
-  ${renderEnums(args)}
+  // TODO: add index file
 
-  ${renderNamespaces(args, typeToInputTypeAssociation, inputTypesMap)}
-
-  ${renderResolvers(args)}
-
-  `
+  return files
 }
 
 function renderHeader(args: GenerateArgs): string {
@@ -117,27 +117,17 @@ function renderContext(context?: ContextDefinition) {
   return `type ${getContextName(context)} = any`
 }
 
-function renderNamespaces(
-  args: GenerateArgs,
-  typeToInputTypeAssociation: TypeToInputTypeAssociation,
-  inputTypesMap: InputTypesMap,
-): string {
-  return args.types
-    .filter(type => type.type.isObject)
-    .map(type =>
-      renderNamespace(type, typeToInputTypeAssociation, inputTypesMap, args),
-    )
-    .join(os.EOL)
-}
-
-function renderNamespace(
+function generateTypeFile(
   graphQLTypeObject: GraphQLTypeObject,
+  args: GenerateArgs,
   typeToInputTypeAssociation: TypeToInputTypeAssociation,
   inputTypesMap: InputTypesMap,
-  args: GenerateArgs,
-): string {
-  return `\
-    export namespace ${graphQLTypeObject.name}Resolvers {
+): CodeFileLike {
+
+  const code = `\
+    ${renderHeader(args)}
+
+    ${renderEnums(args)}
 
     ${renderDefaultResolvers(graphQLTypeObject, args, 'defaultResolvers')}
 
@@ -162,8 +152,54 @@ function renderNamespace(
       args.context,
     )}
 
-    ${/* TODO renderResolverClass(type, modelMap) */ ''}
-  }
+    ${renderAbstractClass(graphQLTypeObject, typeToInputTypeAssociation, inputTypesMap, args)}
+  `
+  return { path: `${graphQLTypeObject.name}.ts`, force: false, code }
+}
+
+function renderAbstractClass(
+  graphQLTypeObject: GraphQLTypeObject,
+  typeToInputTypeAssociation: TypeToInputTypeAssociation,
+  inputTypesMap: InputTypesMap,
+  args: GenerateArgs, 
+): string {
+
+  String(typeToInputTypeAssociation)
+  String(inputTypesMap)
+
+  return `export abstract class Base${graphQLTypeObject.name} implements I${graphQLTypeObject.name} {
+    ${renderDefaultResolverMethods(graphQLTypeObject, args)}
+
+    ${renderAbstractResolverMethods(graphQLTypeObject, args)}
+  }`
+}
+
+function renderAbstractResolverMethods(
+  type: GraphQLTypeObject,
+  args: GenerateArgs
+): string {
+  const model = args.modelMap[type.name]
+  const modelFields = model ? fieldsFromModelDefinition(model.definition) : []
+
+  return type.fields
+    .filter(field => shouldScaffoldFieldResolver(field, modelFields, args))
+    .map(field =>
+      renderAbstractResolverMethod(field, type, args.modelMap, args.context),
+    )
+    .join(os.EOL)
+}
+
+function renderAbstractResolverMethod(
+  field: GraphQLTypeField,
+  type: GraphQLTypeObject,
+  modelMap: ModelMap,
+  context?: ContextDefinition,
+): string {
+  const resolverDefinition = getResolverDefinition(field, type, modelMap, context)
+  const returnType = printFieldLikeType(field, modelMap)
+
+  return `
+  abstract ${field.name} ${resolverDefinition}: ${returnType} | Promise<${returnType}>
   `
 }
 
@@ -239,16 +275,7 @@ function renderResolverFunctionInterface(
   context?: ContextDefinition,
 ): string {
   const resolverName = `${upperFirst(field.name)}Resolver`
-  const resolverDefinition = `
-  (
-    parent: ${getModelName(type.type as any, modelMap, 'undefined')},
-    args: ${
-      field.arguments.length > 0 ? `Args${upperFirst(field.name)}` : '{}'
-    },
-    ctx: ${getContextName(context)},
-    info: GraphQLResolveInfo,
-  )
-  `
+  const resolverDefinition = getResolverDefinition(field, type, modelMap, context)
   const returnType = printFieldLikeType(field, modelMap)
 
   if (type.name === 'Subscription') {
@@ -265,13 +292,31 @@ function renderResolverFunctionInterface(
   `
 }
 
+function getResolverDefinition(
+  field: GraphQLTypeField,
+  type: GraphQLTypeObject,
+  modelMap: ModelMap,
+  context?: ContextDefinition,
+): string {
+  return `
+  (
+    parent: ${getModelName(type.type as any, modelMap, 'undefined')},
+    args: ${
+      field.arguments.length > 0 ? `Args${upperFirst(field.name)}` : '{}'
+    },
+    ctx: ${getContextName(context)},
+    info: GraphQLResolveInfo,
+  )
+  `  
+}
+
 function renderResolverTypeInterface(
   type: GraphQLTypeObject,
   modelMap: ModelMap,
   context?: ContextDefinition,
 ): string {
   return `
-  export interface Type {
+  export interface I${upperFirst(type.name)} {
     ${type.fields
       .map(field =>
         renderResolverTypeInterfaceFunction(field, type, modelMap, context),
