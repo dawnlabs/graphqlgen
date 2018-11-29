@@ -52,6 +52,36 @@ export function fieldsFromModelDefinition(
   return []
 }
 
+export function renderDefaultResolverMethods(
+  graphQLTypeObject: GraphQLTypeObject,
+  args: GenerateArgs,
+): string {
+  const modelName = getModelName(graphQLTypeObject.type, args.modelMap)
+  const defaultResolverFields = extractDefaultResolverFields(graphQLTypeObject, args)
+
+  if (!defaultResolverFields.length) {
+    return ''
+  }
+
+  return defaultResolverFields
+    .map(({ name, optional }) => renderDefaultResolverMethod(name, optional, modelName))
+    .join(os.EOL)
+}
+
+export function renderDefaultResolverMethod(
+  fieldName: string,
+  fieldOptional: boolean,
+  parentTypeName: string, 
+): string {
+  const field = `parent.${fieldName}`
+  const fieldGetter = renderFieldGetter(field, fieldOptional)
+
+  return `\
+  ${fieldName}(parent: ${parentTypeName}) {
+    return ${fieldGetter}
+  }`
+}
+
 export function renderDefaultResolvers(
   graphQLTypeObject: GraphQLTypeObject,
   args: GenerateArgs,
